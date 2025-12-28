@@ -1,86 +1,97 @@
+// services/scraperService.js
 const axios = require('axios');
 const cheerio = require('cheerio');
 const Article = require('../models/Article');
 
+// Constants
 const BASE_URL = 'https://beyondchats.com/blogs/';
 
-// Helper to fetch HTML
+// Helper function to load HTML
 const fetchHTML = async (url) => {
-    const { data } = await axios.get(url);
-    return cheerio.load(data);
+    try {
+        const { data } = await axios.get(url);
+        return cheerio.load(data);
+    } catch (error) {
+        console.error(`Error fetching ${url}:`, error.message);
+        throw error;
+    }
 };
 
 const scrapeArticles = async () => {
+    console.log('🚀 Scraping started...');
+    
     try {
-        console.log('🕵️ Started Scraping Process...');
-
-        // Step 1: Find the Last Page Number
-        const $main = await fetchHTML(BASE_URL);
+        // Step 1: Get Main Page to find Last Page Number
+        const $ = await fetchHTML(BASE_URL);
         
-        // Website ke pagination structure ke hisab se last page dhundna
-        // Usually class '.page-numbers' hoti hai. 
-        // Note: Actual scraping mein class name inspect karke verify karna padta hai.
-        // Assuming standard WP structure:
-        const pageNumbers = [];
-        $('.page-numbers').each((i, el) => {
-            const num = parseInt($(el).text());
-            if (!isNaN(num)) pageNumbers.push(num);
+        // "Last" page button usually has a specific class. 
+        // Based on typical WordPress/Blog structures, we look for page numbers.
+        // Let's grab all page number links and find the max value.
+        let maxPage = 1;
+        $('.page-numbers').each((_, element) => {
+            const num = parseInt($(element).text());
+            if (!isNaN(num) && num > maxPage) {
+                maxPage = num;
+            }
         });
         
-        const lastPage = pageNumbers.length > 0 ? Math.max(...pageNumbers) : 1;
-        console.log(`📄 Last page identified: ${lastPage}`);
+        console.log(`📄 Last Page Identified: ${maxPage}`);
 
-        // Step 2: Fetch Articles from the Last Page
-        const targetUrl = `${BASE_URL}page/${lastPage}/`;
-        const $lastPage = await fetchHTML(targetUrl);
+        // Step 2: Fetch the Last Page
+        const lastPageUrl = `${BASE_URL}page/${maxPage}/`;
+        const $lastPage = await fetchHTML(lastPageUrl);
         
-        const articlesToScrape = [];
-        
-        // Article cards usually in 'div.post-card' or similar. 
-        // Need to target the correct selector based on BeyondChats HTML.
-        // Generic approach for generic WP blogs:
-        $lastPage('article, .post, .blog-post').slice(0, 5).each((i, el) => {
-            const link = $lastPage(el).find('a').attr('href');
-            if (link) articlesToScrape.push(link);
+        // Step 3: Get Article Links from that page (Bottom 5 logic)
+        // Usually blogs have articles in <article> tags or divs with class 'post'
+        const articleLinks = [];
+        $lastPage('.post-card, article').each((_, element) => {
+            const link = $lastPage(element).find('a').attr('href');
+            if (link) articleLinks.push(link);
         });
 
-        console.log(`🔗 Found ${articlesToScrape.length} articles on last page.`);
+        
+        const linksToProcess = articleLinks.slice(-5);
+        console.log(`🔗 Found ${linksToProcess.length} articles to process.`);
 
-        // Step 3: Visit each article and get content
-        let count = 0;
-        for (const link of articlesToScrape) {
+        // Step 4: Visit each article and extract content
+        const savedArticles = [];
+
+        for (const link of linksToProcess) {
             try {
                 const $post = await fetchHTML(link);
                 
-                // Extract Data
+                // Extracting Title and Content
+                // Note: Class names might need adjustment if BeyondChats changes theme
                 const title = $post('h1').first().text().trim();
-                const content = $post('.entry-content, .post-content').text().trim(); // Adjust selector based on actual site
-                const date = $post('.published, .date').text().trim();
+                const content = $post('.entry-content, .post-content').text().trim(); 
+                const date = $post('.published').first().text().trim() || new Date().toISOString();
 
                 if (title && content) {
-                    // DB me save karo (upsert: agar hai to update, nahi to create)
-                    await Article.findOneAndUpdate(
+                    // Database save  (Upsert: Create if new, Update if exists)
+                    const article = await Article.findOneAndUpdate(
                         { articleUrl: link },
                         { 
                             title, 
                             originalContent: content, 
                             articleUrl: link,
-                            publishedDate: date
+                            publishedDate: date,
+                            status: 'pending' // Ready for Phase 2
                         },
                         { upsert: true, new: true }
                     );
-                    count++;
+                    savedArticles.push(article);
+                    console.log(`✅ Saved: ${title.substring(0, 30)}...`);
                 }
             } catch (err) {
-                console.error(`❌ Failed to scrape ${link}:`, err.message);
+                console.error(`❌ Failed to scrape ${link}`, err.message);
             }
         }
 
-        return { message: `Successfully scraped and saved ${count} oldest articles.` };
+        return savedArticles;
 
     } catch (error) {
-        console.error('Scraping Error:', error);
-        throw new Error('Scraping Failed');
+        console.error('Critical Scraper Error:', error);
+        throw new Error('Scraping workflow failed');
     }
 };
 

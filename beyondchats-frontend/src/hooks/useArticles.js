@@ -2,7 +2,7 @@
 import { useState, useEffect } from 'react';
 import axios from 'axios';
 
-const API_URL = 'http://localhost:5000/api/articles';
+const API_URL = 'https://beyondchats-assignment-m7m9.onrender.com/api/articles';
 
 export const useArticles = () => {
   const [articles, setArticles] = useState([]);
